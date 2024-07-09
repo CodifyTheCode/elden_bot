@@ -1,0 +1,112 @@
+import tensorflow as tf
+import time
+import cv2
+import mss
+import numpy as np
+import os
+from collections import deque
+import pydirectinput
+
+# Better performance
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+# Key indexes
+indexes = {"W": 0, "A": 1, "S": 2, "D": 3, "F": 4, "R": 5, "U": 6, "I": 7, "O": 8, "P": 9, " ": 10}
+
+def press_keys(predictions):
+    keys = ["w", "a", "s", "d", "f", "r", "u", "i", "o", "p", " "]
+    for i in range(len(predictions[0])):
+        if predictions[0][i] > 0.5:
+            pydirectinput.keyDown(keys[i], _pause=False)
+            print(keys[i])
+        else:
+            pydirectinput.keyUp(keys[i], _pause=False)
+
+def end(init, count):
+    print("Done")
+    ending = time.time()
+    duration = ending - init
+    print(f"Average FPS: {count / duration}")
+
+def initialize_model():
+    init = tf.keras.initializers.VarianceScaling(scale=2)
+    inputs = tf.keras.layers.Input(shape=(244, 138, 3))
+    num_actions = 11
+    x = tf.keras.layers.Conv2D(32, 8, strides=(4, 4), activation="relu", kernel_initializer=init)(inputs)
+    x = tf.keras.layers.Conv2D(64, 4, strides=(3, 3), activation="relu", kernel_initializer=init)(x)
+    x = tf.keras.layers.Conv2D(64, 3, strides=(1, 1), activation="relu", kernel_initializer=init)(x)
+    x = tf.keras.layers.Flatten()(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dense(512, activation="relu", kernel_initializer=init)(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dense(num_actions, activation="sigmoid")(x)
+    model = tf.keras.models.Model(inputs=inputs, outputs=x)
+    return model
+
+def main():
+    model = initialize_model()
+    checkpoint_filepath = "./video_test/checkpoint"
+    model.load_weights(checkpoint_filepath)
+
+    # Dummy call to initialize model
+    model(np.random.uniform(-1, 1, (1, 244, 138, 3)))
+
+    init_count = 0
+    width = 244
+    new_height = 138
+    left = 908
+    down = 495
+    width2 = 8
+    height = 1067
+
+    max_health = None
+
+    print("Starting in:")
+    for i in range(5, 0, -1):
+        print(i)
+        time.sleep(1)
+
+    init = time.time()
+    inputs = deque(maxlen=3)
+
+    with mss.mss() as sct:
+        count = 0
+        try:
+            while True:
+                # Part of the screen to capture
+                monitor = {"top": 50, "left": 0, "width": 2048, "height": 1152}
+
+                # Get raw pixels from the screen, save it to a Numpy array
+                img = np.array(sct.grab(monitor))
+
+                img2 = img[left:left + width, down:down + height]
+                _, threshb = cv2.threshold(img2[:, :, 0], 190, 255, cv2.THRESH_BINARY)
+                _, threshg = cv2.threshold(img2[:, :, 1], 190, 255, cv2.THRESH_BINARY)
+                _, threshr = cv2.threshold(img2[:, :, 2], 190, 255, cv2.THRESH_BINARY)
+                summed = threshb + threshg + threshr
+                value = np.max(np.argmax(summed, axis=1))
+                if count == 0:
+                    max_health = value if value > 0 else 1000
+
+                value = -value / max_health
+                img = cv2.resize(img, (width, new_height), interpolation=cv2.INTER_AREA)
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
+
+                if count == 0:
+                    for _ in range(3):
+                        inputs.append(img)
+                else:
+                    inputs.append(img)
+
+                img = np.array(inputs)
+                img = np.expand_dims(img, axis=0).transpose(0, 3, 2, 1)
+
+                pred = model(img)
+                press_keys(pred)
+                count += 1
+
+        except KeyboardInterrupt:
+            end(init, count)
+
+if __name__ == "__main__":
+    main()
